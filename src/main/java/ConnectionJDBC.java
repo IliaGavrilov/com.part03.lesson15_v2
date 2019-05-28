@@ -1,8 +1,7 @@
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.PreparedStatement;
-import java.sql.SQLException;
+import java.sql.*;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
 public class ConnectionJDBC {
 
@@ -11,9 +10,11 @@ public class ConnectionJDBC {
         String user = "postgres";
         String password = "jU3y3gIV";
 
+        /* Вызов метода для установки связи с БД */
         Connection connection = connectJDBC(url, user, password);
 
-        ArrayList<String> tablesSQL = new ArrayList<String>();
+        /* Проектирование базы */
+        List<String> tablesSQL = new ArrayList<String>();
         tablesSQL.add("CREATE TABLE IF NOT EXISTS \"USER\"(\n" +
                 "user_id serial PRIMARY KEY,\n" +
                 "name varchar(50) UNIQUE NOT NULL,\n" +
@@ -41,21 +42,88 @@ public class ConnectionJDBC {
                 "\tREFERENCES \"ROLE\" (role_id) MATCH SIMPLE\n" +
                 "\tON UPDATE NO ACTION ON DELETE NO ACTION);");
 
+        /* Вызов метода для создания базы */
         createTables(connection, tablesSQL);
 
+        /* Параметризированный запрос INSERT */
+        String insertQuery = "INSERT INTO \"USER\" (user_id, name, birthday, login_id, city, email, description)\n" +
+                "VALUES (?, ?, '1987-09-06 21:45:00', '2019-05-28 21:09:00', 'Innopolis', 'iluha_gia@mail.ru', 'любит вареники');";
+        PreparedStatement insert = connection.prepareStatement(insertQuery);
+        insert.setInt(1, 0);
+        insert.setString(2,"Илья");
+        insert.execute();
+        insert.close();
+
+        /* Параметризированный запрос INSERT, используя Batch процесс */
+        List<String> names = Arrays.asList("Administration", "Clients", "Billing");
+        List<String> descriptions = Arrays.asList("умеет готовить вареники", "не умеет готовить", "продает вареники");
+        String insertBatchQuery = "INSERT INTO \"ROLE\" (role_id, name, description)\n" +
+                "VALUES (?, ?, ?); ";
+        try{
+            PreparedStatement insertBatch = connection.prepareStatement(insertBatchQuery);
+            connection.setAutoCommit(false);
+            for(int i=0; i<= 2;i++){
+                insertBatch.setInt(1, i);
+                insertBatch.setString(2, names.get(i));
+                insertBatch.setString(3, descriptions.get(i));
+                insertBatch.addBatch();
+            }
+            insertBatch.executeBatch();
+            connection.commit();
+            insertBatch.close();
+        }catch(Exception e){
+            e.printStackTrace();
+            connection.rollback();
+        }
+
+        /* Параметризированная выборка по login_ID и name одновременно из ResultSet*/
+        String query = "SELECT * FROM \"USER\";";
+        Statement statement = connection.createStatement();
+        ResultSet resultSet = statement.executeQuery(query);
+        while(resultSet.next()){
+            String resultSetLogin = resultSet.getString("login_ID");
+            String resultSetName = resultSet.getString("name");
+            System.out.println("Параметризированная выборка: " + "login_ID: " + resultSetLogin + "; name: " + resultSetName);
+        }
+        resultSet.close();
+        statement.close();
+
+        /* Выполнение 2-х SQL операции Insert и установка логической точки сохранения(SAVEPOINT) */
+        Savepoint savepointOne = connection.setSavepoint("SavepointOne");
+        try{
+            insertRow(connection, 1,"Вася", "1984-04-15 14:00:00", "2019-05-29 00:29:00", "Новосибирск",
+                    "1@temp.com", "любит пельмени");
+            insertRow(connection, 0, 0, 0);
+            insertRow(connection, 1, 1, 1);
+            connection.commit();
+        }catch(SQLException e){
+            connection.rollback(savepointOne);
+            System.out.println("Cработал SQLException");
+        }
+
+        /* Выполнение 2-х SQL операции Insert, установка логической точки сохранения(SAVEPOINT A), ввод некорректных данных */
+        Savepoint savepointA = connection.setSavepoint("SavepointA");
+        try{
+            insertRow(connection, 3, "Некорректные данные", "не любит пельмени");
+        }catch(SQLException e){
+            connection.rollback(savepointA);
+            System.out.println("Cработал генерируемый SQLException, запускается rollback() к точке A");
+        }
+
+        /* Закрываем connection */
         connection.close();
     }
 
-    /* Connection - объект, который держит соединение с БД */
+    /* Метод для установки связи с БД */
     public static Connection connectJDBC(String url, String user, String password) throws SQLException {
         Connection cn = null;
         DriverManager.registerDriver(new org.postgresql.Driver());
         cn = DriverManager.getConnection(url, user, password);
         return cn;
-        //cn.close();
     }
 
-    public static void createTables(Connection cn, ArrayList<String> tablesSQL) throws SQLException {
+    /* Метод для создания базы */
+    public static void createTables(Connection cn, List<String> tablesSQL) throws SQLException {
         PreparedStatement ps = null;
         for (String elem : tablesSQL){
             ps = cn.prepareStatement(elem);
@@ -64,8 +132,50 @@ public class ConnectionJDBC {
         ps.close();
     }
 
-    /* Statement - объект, который выполняет запрос к БД */
+    /* Метод для внесения записи в таблицу USER */
+    public static void insertRow(Connection cn, int user_id, String name, String birthday, String login_id,
+                                 String city, String email, String description) throws SQLException {
+        String insert = "INSERT INTO \"USER\" (user_id, name, birthday, login_id, city, email, description)" +
+                "VALUES (?, ?, ?, ?, ?, ?, ?);";
+        PreparedStatement prepStat = cn.prepareStatement(insert);
+        prepStat.setInt(1, user_id);
+        prepStat.setString(2, name);
+        prepStat.setTimestamp(3, stringToTimestampConverter(birthday));
+        prepStat.setTimestamp(4, stringToTimestampConverter(login_id));
+        prepStat.setString(5, city);
+        prepStat.setString(6, email);
+        prepStat.setString(7, description);
+        prepStat.execute();
+        prepStat.close();
+    }
 
-    /* Result set - объект с результатом запроса */
+    /* Перегразка метода для внесения записи в таблицу ROLE */
+    public static void insertRow(Connection cn, int role_id, String name, String description) throws SQLException {
+        String insert = "INSERT INTO \"ROLE\" (role_id, name, description)" +
+                "VALUES (?, ?, ?);";
+        PreparedStatement prepStat = cn.prepareStatement(insert);
+        prepStat.setInt(1,role_id);
+        prepStat.setString(2,name);
+        prepStat.setString(3, description);
+        prepStat.execute();
+        prepStat.close();
+    }
 
+    /* Перегразка метода для внесения записи в таблицу USER_ROLE */
+    public static void insertRow(Connection cn, int id, int role_id, int user_id) throws SQLException {
+        String insert = "INSERT INTO \"USER_ROLE\" (id, role_id, user_id)" +
+                "VALUES (?, ?, ?);";
+        PreparedStatement prepStat = cn.prepareStatement(insert);
+        prepStat.setInt(1, id);
+        prepStat.setInt(2,role_id);
+        prepStat.setInt(3,user_id);
+        prepStat.execute();
+        prepStat.close();
+    }
+
+    /* Хелпер метод для преобразования стрингов в TimeStamp */
+    public static Timestamp stringToTimestampConverter(String givenString){
+        java.sql.Timestamp ts = java.sql.Timestamp.valueOf(givenString);
+        return ts;
+    }
 }
